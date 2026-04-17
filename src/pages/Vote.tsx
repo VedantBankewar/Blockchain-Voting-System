@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
     Vote,
@@ -13,36 +13,24 @@ import {
     Check
 } from 'lucide-react'
 import { useWallet } from '@/hooks/useWallet'
+import { useElection, useCandidates, useHasVoted, useVoterStatus, queryKeys } from '@/hooks/useQueries'
 import { useContract } from '@/hooks/useContract'
 import { formatAddress } from '@/lib/utils'
-
-interface Candidate {
-    id: number
-    name: string
-    party: string
-    imageUrl?: string
-}
-
-// Demo data
-const demoElection = {
-    id: 1,
-    name: 'Student Council Election 2024',
-    description: 'Annual election for student council representatives. Please select one candidate.',
-    endDate: new Date(Date.now() + 86400000 * 6).toISOString(),
-}
-
-const demoCandidates: Candidate[] = [
-    { id: 1, name: 'Alice Johnson', party: 'Progressive Students' },
-    { id: 2, name: 'Bob Smith', party: 'Student Unity Party' },
-    { id: 3, name: 'Carol Williams', party: 'Innovation Alliance' },
-    { id: 4, name: 'David Brown', party: 'Academic Excellence' },
-]
+import { useQueryClient } from '@tanstack/react-query'
+import { PageLoader } from '@/components/ui/States'
 
 export function VotePage() {
     const { electionId } = useParams()
     const navigate = useNavigate()
+    const queryClient = useQueryClient()
     const { isConnected, address, connect, signer, provider } = useWallet()
-    const { castVote, isLoading: contractLoading } = useContract(signer, provider)
+    const { castVote } = useContract(signer, provider)
+
+    const electionIdNum = electionId ? parseInt(electionId, 10) : null
+    const { data: election, isLoading: electionLoading } = useElection(electionIdNum)
+    const { data: candidates, isLoading: candidatesLoading } = useCandidates(electionIdNum)
+    const { data: hasVotedAlready } = useHasVoted(electionIdNum, address)
+    const { data: isRegistered } = useVoterStatus(address)
 
     const [selectedCandidate, setSelectedCandidate] = useState<number | null>(null)
     const [step, setStep] = useState<'select' | 'confirm' | 'processing' | 'success'>('select')
@@ -51,30 +39,27 @@ export function VotePage() {
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
 
-    const candidates = demoCandidates
-    const election = demoElection
-
     const handleVote = async () => {
         if (!selectedCandidate) return
-
         setStep('confirm')
     }
 
     const confirmVote = async () => {
-        if (!selectedCandidate) return
+        if (!selectedCandidate || !electionIdNum) return
 
         setStep('processing')
         setError(null)
 
         try {
-            // In production, use actual contract:
-            // const result = await castVote(parseInt(electionId!), selectedCandidate)
+            const result = await castVote(electionIdNum, selectedCandidate)
+            setTxHash(result.txHash)
+            setVoteHash(result.voteHash)
 
-            // Demo: simulate transaction
-            await new Promise(resolve => setTimeout(resolve, 2000))
+            // Invalidate queries to refresh data
+            queryClient.invalidateQueries({ queryKey: queryKeys.election(electionIdNum) })
+            queryClient.invalidateQueries({ queryKey: queryKeys.candidates(electionIdNum) })
+            queryClient.invalidateQueries({ queryKey: queryKeys.hasVoted(electionIdNum, address!) })
 
-            setTxHash('0x' + Array(64).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join(''))
-            setVoteHash('0x' + Array(64).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join(''))
             setStep('success')
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to cast vote')
@@ -88,8 +73,30 @@ export function VotePage() {
         setTimeout(() => setCopied(false), 2000)
     }
 
-    const selectedCandidateData = candidates.find(c => c.id === selectedCandidate)
+    const selectedCandidateData = candidates?.find(c => c.id === selectedCandidate)
 
+    // Loading state
+    if (electionLoading || candidatesLoading) {
+        return <PageLoader />
+    }
+
+    // Election not found
+    if (!election) {
+        return (
+            <div className="min-h-[80vh] flex items-center justify-center bg-gradient-section">
+                <div className="glass-card p-12 max-w-md text-center">
+                    <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+                    <h2 className="text-2xl font-bold text-primary-900 mb-4">Election Not Found</h2>
+                    <p className="text-gray-600 mb-8">This election does not exist or has been removed.</p>
+                    <button onClick={() => navigate('/dashboard')} className="btn-primary">
+                        Back to Dashboard
+                    </button>
+                </div>
+            </div>
+        )
+    }
+
+    // Not connected
     if (!isConnected) {
         return (
             <div className="min-h-[80vh] flex items-center justify-center bg-gradient-section">
@@ -97,18 +104,45 @@ export function VotePage() {
                     <div className="w-20 h-20 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-6">
                         <Vote className="w-10 h-10 text-primary-700" />
                     </div>
-                    <h2 className="text-2xl font-bold text-primary-900 mb-4">
-                        Connect Your Wallet
-                    </h2>
-                    <p className="text-gray-600 mb-8">
-                        Please connect your MetaMask wallet to cast your vote.
-                    </p>
-                    <button onClick={connect} className="btn-primary w-full">
-                        Connect Wallet
-                    </button>
+                    <h2 className="text-2xl font-bold text-primary-900 mb-4">Connect Your Wallet</h2>
+                    <p className="text-gray-600 mb-8">Please connect your MetaMask wallet to cast your vote.</p>
+                    <button onClick={connect} className="btn-primary w-full">Connect Wallet</button>
                 </div>
             </div>
         )
+    }
+
+    // Already voted
+    if (hasVotedAlready) {
+        return (
+            <div className="min-h-[80vh] flex items-center justify-center bg-gradient-section">
+                <div className="glass-card p-12 max-w-md text-center">
+                    <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
+                    <h2 className="text-2xl font-bold text-primary-900 mb-4">Already Voted</h2>
+                    <p className="text-gray-600 mb-8">You have already cast your vote in this election.</p>
+                    <button onClick={() => navigate('/dashboard')} className="btn-primary">Back to Dashboard</button>
+                </div>
+            </div>
+        )
+    }
+
+    // Not registered
+    if (isRegistered === false) {
+        return (
+            <div className="min-h-[80vh] flex items-center justify-center bg-gradient-section">
+                <div className="glass-card p-12 max-w-md text-center">
+                    <AlertCircle className="w-16 h-16 text-yellow-500 mx-auto mb-4" />
+                    <h2 className="text-2xl font-bold text-primary-900 mb-4">Not Registered</h2>
+                    <p className="text-gray-600 mb-8">You are not registered as an eligible voter for this election.</p>
+                    <button onClick={() => navigate('/dashboard')} className="btn-primary">Back to Dashboard</button>
+                </div>
+            </div>
+        )
+    }
+
+    const electionData = {
+        name: election.name,
+        description: election.description,
     }
 
     return (
@@ -130,10 +164,8 @@ export function VotePage() {
                             <Vote className="w-8 h-8 text-primary-700" />
                         </div>
                         <div>
-                            <h1 className="text-2xl font-bold text-primary-900 mb-2">
-                                {election.name}
-                            </h1>
-                            <p className="text-gray-600">{election.description}</p>
+                            <h1 className="text-2xl font-bold text-primary-900 mb-2">{electionData.name}</h1>
+                            <p className="text-gray-600">{electionData.description}</p>
                         </div>
                     </div>
                 </div>
@@ -141,12 +173,10 @@ export function VotePage() {
                 {/* Step: Select Candidate */}
                 {step === 'select' && (
                     <div>
-                        <h2 className="text-xl font-bold text-primary-900 mb-6">
-                            Select Your Candidate
-                        </h2>
+                        <h2 className="text-xl font-bold text-primary-900 mb-6">Select Your Candidate</h2>
 
                         <div className="grid md:grid-cols-2 gap-4 mb-8">
-                            {candidates.map((candidate) => (
+                            {candidates?.map((candidate) => (
                                 <button
                                     key={candidate.id}
                                     onClick={() => setSelectedCandidate(candidate.id)}
@@ -163,9 +193,7 @@ export function VotePage() {
                                             <User className="w-7 h-7" />
                                         </div>
                                         <div className="flex-1">
-                                            <h3 className="font-bold text-lg text-primary-900">
-                                                {candidate.name}
-                                            </h3>
+                                            <h3 className="font-bold text-lg text-primary-900">{candidate.name}</h3>
                                             <p className="text-gray-500">{candidate.party}</p>
                                         </div>
                                         {selectedCandidate === candidate.id && (
@@ -179,8 +207,7 @@ export function VotePage() {
                         <button
                             onClick={handleVote}
                             disabled={!selectedCandidate}
-                            className={`btn-primary w-full flex items-center justify-center gap-2 ${!selectedCandidate && 'opacity-50 cursor-not-allowed'
-                                }`}
+                            className={`btn-primary w-full flex items-center justify-center gap-2 ${!selectedCandidate && 'opacity-50 cursor-not-allowed'}`}
                         >
                             Continue to Confirm
                         </button>
@@ -194,12 +221,8 @@ export function VotePage() {
                             <div className="w-20 h-20 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                                 <Shield className="w-10 h-10 text-primary-700" />
                             </div>
-                            <h2 className="text-2xl font-bold text-primary-900 mb-2">
-                                Confirm Your Vote
-                            </h2>
-                            <p className="text-gray-600">
-                                Please review your selection before submitting
-                            </p>
+                            <h2 className="text-2xl font-bold text-primary-900 mb-2">Confirm Your Vote</h2>
+                            <p className="text-gray-600">Please review your selection before submitting</p>
                         </div>
 
                         <div className="bg-gray-50 rounded-xl p-6 mb-8">
@@ -209,9 +232,7 @@ export function VotePage() {
                                     <User className="w-7 h-7" />
                                 </div>
                                 <div>
-                                    <div className="text-xl font-bold text-primary-900">
-                                        {selectedCandidateData.name}
-                                    </div>
+                                    <div className="text-xl font-bold text-primary-900">{selectedCandidateData.name}</div>
                                     <div className="text-gray-500">{selectedCandidateData.party}</div>
                                 </div>
                             </div>
@@ -237,16 +258,8 @@ export function VotePage() {
                         )}
 
                         <div className="flex gap-4">
-                            <button
-                                onClick={() => setStep('select')}
-                                className="btn-secondary flex-1"
-                            >
-                                Go Back
-                            </button>
-                            <button
-                                onClick={confirmVote}
-                                className="btn-primary flex-1 flex items-center justify-center gap-2"
-                            >
+                            <button onClick={() => setStep('select')} className="btn-secondary flex-1">Go Back</button>
+                            <button onClick={confirmVote} className="btn-primary flex-1 flex items-center justify-center gap-2">
                                 Sign & Submit Vote
                             </button>
                         </div>
@@ -259,15 +272,9 @@ export function VotePage() {
                         <div className="w-20 h-20 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-6 animate-pulse">
                             <Loader2 className="w-10 h-10 text-primary-700 animate-spin" />
                         </div>
-                        <h2 className="text-2xl font-bold text-primary-900 mb-4">
-                            Processing Your Vote
-                        </h2>
-                        <p className="text-gray-600 mb-4">
-                            Please confirm the transaction in your MetaMask wallet.
-                        </p>
-                        <p className="text-sm text-gray-500">
-                            This may take a few moments...
-                        </p>
+                        <h2 className="text-2xl font-bold text-primary-900 mb-4">Processing Your Vote</h2>
+                        <p className="text-gray-600 mb-4">Please confirm the transaction in your MetaMask wallet.</p>
+                        <p className="text-sm text-gray-500">This may take a few moments...</p>
                     </div>
                 )}
 
@@ -278,12 +285,8 @@ export function VotePage() {
                             <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
                                 <CheckCircle className="w-12 h-12 text-green-600" />
                             </div>
-                            <h2 className="text-2xl font-bold text-primary-900 mb-2">
-                                Vote Successfully Cast!
-                            </h2>
-                            <p className="text-gray-600">
-                                Your vote has been recorded on the blockchain
-                            </p>
+                            <h2 className="text-2xl font-bold text-primary-900 mb-2">Vote Successfully Cast!</h2>
+                            <p className="text-gray-600">Your vote has been recorded on the blockchain</p>
                         </div>
 
                         <div className="bg-gray-50 rounded-xl p-6 mb-6">
@@ -293,9 +296,7 @@ export function VotePage() {
                                     <User className="w-6 h-6" />
                                 </div>
                                 <div>
-                                    <div className="text-lg font-bold text-primary-900">
-                                        {selectedCandidateData.name}
-                                    </div>
+                                    <div className="text-lg font-bold text-primary-900">{selectedCandidateData.name}</div>
                                     <div className="text-gray-500">{selectedCandidateData.party}</div>
                                 </div>
                             </div>
@@ -306,14 +307,9 @@ export function VotePage() {
                                 <div className="flex justify-between items-center">
                                     <div>
                                         <div className="text-sm text-gray-500">Transaction Hash</div>
-                                        <div className="font-mono text-sm text-primary-700">
-                                            {formatAddress(txHash || '')}
-                                        </div>
+                                        <div className="font-mono text-sm text-primary-700">{formatAddress(txHash || '')}</div>
                                     </div>
-                                    <button
-                                        onClick={() => copyToClipboard(txHash || '')}
-                                        className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
-                                    >
+                                    <button onClick={() => copyToClipboard(txHash || '')} className="p-2 rounded-lg hover:bg-gray-200 transition-colors">
                                         {copied ? <Check className="w-5 h-5 text-green-600" /> : <Copy className="w-5 h-5 text-gray-500" />}
                                     </button>
                                 </div>
@@ -323,14 +319,9 @@ export function VotePage() {
                                 <div className="flex justify-between items-center">
                                     <div>
                                         <div className="text-sm text-gray-500">Vote Hash (Receipt)</div>
-                                        <div className="font-mono text-sm text-primary-700">
-                                            {formatAddress(voteHash || '')}
-                                        </div>
+                                        <div className="font-mono text-sm text-primary-700">{formatAddress(voteHash || '')}</div>
                                     </div>
-                                    <button
-                                        onClick={() => copyToClipboard(voteHash || '')}
-                                        className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
-                                    >
+                                    <button onClick={() => copyToClipboard(voteHash || '')} className="p-2 rounded-lg hover:bg-gray-200 transition-colors">
                                         {copied ? <Check className="w-5 h-5 text-green-600" /> : <Copy className="w-5 h-5 text-gray-500" />}
                                     </button>
                                 </div>
@@ -347,21 +338,18 @@ export function VotePage() {
                         </div>
 
                         <div className="flex gap-4">
-                            <button
-                                onClick={() => navigate('/dashboard')}
-                                className="btn-secondary flex-1"
-                            >
-                                Back to Dashboard
-                            </button>
-                            <a
-                                href={`https://sepolia.etherscan.io/tx/${txHash}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="btn-primary flex-1 flex items-center justify-center gap-2"
-                            >
-                                View on Etherscan
-                                <ExternalLink className="w-4 h-4" />
-                            </a>
+                            <button onClick={() => navigate('/dashboard')} className="btn-secondary flex-1">Back to Dashboard</button>
+                            {txHash && (
+                                <a
+                                    href={`https://sepolia.etherscan.io/tx/${txHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-primary flex-1 flex items-center justify-center gap-2"
+                                >
+                                    View on Etherscan
+                                    <ExternalLink className="w-4 h-4" />
+                                </a>
+                            )}
                         </div>
                     </div>
                 )}

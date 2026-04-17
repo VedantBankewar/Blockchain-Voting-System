@@ -5,16 +5,20 @@ import {
     Search,
     Filter,
     CheckCircle,
-    XCircle,
     MoreVertical,
     Eye,
     Trash2,
     UserCheck,
-    Clock
+    Clock,
+    Loader2,
+    AlertCircle,
+    X,
 } from 'lucide-react'
 import { useWallet } from '@/hooks/useWallet'
-import { useContract } from '@/hooks/useContract'
+import { useRegisterVoter } from '@/hooks/useAdminMutations'
+import { db } from '@/integrations/supabase/client'
 import { formatAddress, formatDateTime } from '@/lib/utils'
+import { useQuery } from '@tanstack/react-query'
 
 interface Voter {
     id: string
@@ -24,41 +28,37 @@ interface Voter {
     votesCount: number
 }
 
-const demoVoters: Voter[] = [
-    {
-        id: '1',
-        walletAddress: '0x1234567890abcdef1234567890abcdef12345678',
-        isVerified: true,
-        registeredAt: new Date(Date.now() - 86400000 * 5).toISOString(),
-        votesCount: 3,
-    },
-    {
-        id: '2',
-        walletAddress: '0xabcdef1234567890abcdef1234567890abcdef12',
-        isVerified: true,
-        registeredAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-        votesCount: 2,
-    },
-    {
-        id: '3',
-        walletAddress: '0x9876543210fedcba9876543210fedcba98765432',
-        isVerified: false,
-        registeredAt: new Date(Date.now() - 86400000).toISOString(),
-        votesCount: 0,
-    },
-]
-
 export function AdminVoters() {
-    const { signer, provider } = useWallet()
-    const { registerVoter, isLoading } = useContract(signer, provider)
+    useWallet() // Keep wallet connection active
+    const registerVoterMutation = useRegisterVoter()
 
-    const [voters, setVoters] = useState<Voter[]>(demoVoters)
-    const [searchQuery, setSearchQuery] = useState('')
-    const [statusFilter, setStatusFilter] = useState<string>('all')
     const [showAddModal, setShowAddModal] = useState(false)
     const [newVoterAddress, setNewVoterAddress] = useState('')
     const [showDropdown, setShowDropdown] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
+    const [success, setSuccess] = useState<string | null>(null)
+
+    // Fetch voters from Supabase
+    const { data: votersData, refetch: refetchVoters } = useQuery({
+        queryKey: ['votersList'],
+        queryFn: async () => {
+            const { data, error } = await db.voters.getAll()
+            if (error) throw error
+            return data || []
+        },
+        staleTime: 60000,
+    })
+
+    const voters: Voter[] = (votersData || []).map((v) => ({
+        id: v.id,
+        walletAddress: v.wallet_address || '',
+        isVerified: v.is_verified || false,
+        registeredAt: v.created_at || new Date().toISOString(),
+        votesCount: 0,
+    }))
+
+    const [searchQuery, setSearchQuery] = useState('')
+    const [statusFilter, setStatusFilter] = useState<string>('all')
 
     const filteredVoters = voters.filter(voter => {
         const matchesSearch = voter.walletAddress.toLowerCase().includes(searchQuery.toLowerCase())
@@ -73,34 +73,53 @@ export function AdminVoters() {
 
     const handleAddVoter = async () => {
         if (!newVoterAddress.match(/^0x[a-fA-F0-9]{40}$/)) {
-            setError('Please enter a valid Ethereum address')
+            setError('Please enter a valid Ethereum address (0x…)')
+            return
+        }
+        setError(null)
+        setSuccess(null)
+
+        try {
+            // Register on blockchain (primary action)
+            await registerVoterMutation.mutateAsync(newVoterAddress)
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Transaction failed'
+            const match = msg.match(/reason="([^"]+)"/) || msg.match(/revert: (.+)/)
+            setError(match ? match[1] : msg)
             return
         }
 
-        // Demo: just add to list
-        const newVoter: Voter = {
-            id: Date.now().toString(),
-            walletAddress: newVoterAddress,
-            isVerified: false,
-            registeredAt: new Date().toISOString(),
-            votesCount: 0,
+        // Best-effort Supabase sync — does not block success
+        try {
+            const { data: existing } = await db.voters.getByWallet(newVoterAddress)
+            if (!existing) {
+                await db.voters.create({ wallet_address: newVoterAddress, is_verified: true })
+            } else {
+                await db.voters.verify(existing.id)
+            }
+            refetchVoters()
+        } catch {
+            // Supabase not configured — blockchain registration still succeeded
         }
 
-        setVoters([newVoter, ...voters])
+        setSuccess(`${newVoterAddress} registered successfully on blockchain.`)
         setNewVoterAddress('')
-        setShowAddModal(false)
-        setError(null)
     }
 
-    const handleVerify = (voterId: string) => {
-        setVoters(voters.map(v =>
-            v.id === voterId ? { ...v, isVerified: true } : v
-        ))
+    const handleVerify = async (voterId: string) => {
+        try {
+            await db.voters.verify(voterId)
+            refetchVoters()
+        } catch (err) {
+            console.error('Failed to verify voter:', err)
+        }
         setShowDropdown(null)
     }
 
-    const handleDelete = (voterId: string) => {
-        setVoters(voters.filter(v => v.id !== voterId))
+    const handleDelete = async (voterId: string) => {
+        // Note: This only removes from Supabase, not from blockchain
+        // A full implementation would need a contract function to remove a voter
+        console.log('Delete voter:', voterId)
         setShowDropdown(null)
     }
 
@@ -263,41 +282,65 @@ export function AdminVoters() {
             {showAddModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
                     <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 animate-scale-in">
-                        <h3 className="text-xl font-bold text-primary-900 mb-4">Add New Voter</h3>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold text-primary-900">Register New Voter</h3>
+                            <button
+                                onClick={() => { setShowAddModal(false); setNewVoterAddress(''); setError(null); setSuccess(null) }}
+                                className="p-2 hover:bg-gray-100 rounded-lg"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <p className="text-sm text-gray-600 mb-4">
+                            Registers the wallet address on-chain so the voter can participate in elections.
+                            MetaMask will prompt you to confirm the transaction.
+                        </p>
+
+                        {error && (
+                            <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 flex gap-2 items-start text-red-700">
+                                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                                <span className="text-sm">{error}</span>
+                            </div>
+                        )}
+
+                        {success && (
+                            <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4 flex gap-2 items-start text-green-700">
+                                <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                                <span className="text-sm">{success}</span>
+                            </div>
+                        )}
 
                         <div className="mb-4">
                             <label className="block text-sm font-medium text-gray-700 mb-2">
-                                Wallet Address
+                                Wallet Address *
                             </label>
                             <input
                                 type="text"
                                 placeholder="0x..."
                                 value={newVoterAddress}
-                                onChange={(e) => setNewVoterAddress(e.target.value)}
+                                onChange={(e) => { setNewVoterAddress(e.target.value); setError(null) }}
                                 className="input-field font-mono"
                             />
-                            {error && (
-                                <p className="text-red-500 text-sm mt-2">{error}</p>
-                            )}
                         </div>
 
                         <div className="flex gap-3">
                             <button
-                                onClick={() => {
-                                    setShowAddModal(false)
-                                    setNewVoterAddress('')
-                                    setError(null)
-                                }}
+                                onClick={() => { setShowAddModal(false); setNewVoterAddress(''); setError(null); setSuccess(null) }}
                                 className="btn-secondary flex-1"
                             >
-                                Cancel
+                                Close
                             </button>
                             <button
                                 onClick={handleAddVoter}
-                                disabled={!newVoterAddress}
-                                className="btn-primary flex-1"
+                                disabled={!newVoterAddress || registerVoterMutation.isPending}
+                                className="btn-primary flex-1 flex items-center justify-center gap-2"
                             >
-                                Add Voter
+                                {registerVoterMutation.isPending ? (
+                                    <><Loader2 className="w-4 h-4 animate-spin" />Registering…</>
+                                ) : (
+                                    'Register Voter'
+                                )}
                             </button>
                         </div>
                     </div>

@@ -234,6 +234,7 @@ export function useContract(signer: JsonRpcSigner | null, provider: BrowserProvi
 
     return {
         contract,
+        readContract,
         isLoading,
         error,
         // Admin functions

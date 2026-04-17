@@ -2,7 +2,6 @@ import {
     Shield,
     Lock,
     Fingerprint,
-    FileCheck,
     Database,
     Eye,
     CheckCircle,

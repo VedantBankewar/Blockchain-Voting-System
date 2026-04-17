@@ -93,6 +93,15 @@ export const db = {
                 .single()
             return { data, error }
         },
+
+        upsert: async (voter: { email?: string; wallet_address?: string; is_verified?: boolean }) => {
+            const { data, error } = await supabase
+                .from('voters')
+                .upsert(voter)
+                .select()
+                .single()
+            return { data, error }
+        },
     },
 
     // Elections

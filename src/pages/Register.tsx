@@ -13,6 +13,7 @@ import {
     CheckCircle
 } from 'lucide-react'
 import { useWallet } from '@/hooks/useWallet'
+import { auth, db } from '@/integrations/supabase/client'
 
 export function Register() {
     const navigate = useNavigate()
@@ -45,21 +46,18 @@ export function Register() {
         setIsLoading(true)
 
         try {
-            // TODO: Implement Supabase registration
-            // const { data, error } = await supabase.auth.signUp({
-            //   email,
-            //   password,
-            //   options: {
-            //     data: { name }
-            //   }
-            // })
+            const { error: signUpError } = await auth.signUp(email, password, name)
+            if (signUpError) throw new Error(signUpError.message)
 
-            // Simulate registration for demo
-            await new Promise(resolve => setTimeout(resolve, 1500))
+            // Create voter profile in Supabase
+            await db.voters.create({
+                email,
+                is_verified: false,
+            })
 
             setStep('wallet-connect')
         } catch (err) {
-            setError('Registration failed. Please try again.')
+            setError(err instanceof Error ? err.message : 'Registration failed. Please try again.')
         } finally {
             setIsLoading(false)
         }
@@ -69,11 +67,22 @@ export function Register() {
         setError(null)
         try {
             await connect()
-            if (isConnected) {
+            if (isConnected && address) {
+                // Check if wallet is already registered
+                const { data } = await db.voters.getByWallet(address)
+
+                if (!data) {
+                    // Create voter profile for new wallet user
+                    await db.voters.create({
+                        wallet_address: address,
+                        is_verified: false,
+                    })
+                }
+
                 setStep('success')
                 setTimeout(() => navigate('/dashboard'), 2000)
             }
-        } catch (err) {
+        } catch {
             setError('Failed to connect wallet. Please try again.')
         }
     }

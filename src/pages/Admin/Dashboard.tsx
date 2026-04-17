@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
     LayoutDashboard,
@@ -14,10 +13,13 @@ import {
     AlertCircle
 } from 'lucide-react'
 import { useWallet } from '@/hooks/useWallet'
+import { useAdminVerify, useElectionCount } from '@/hooks/useQueries'
 
 export function AdminDashboard() {
     const location = useLocation()
     const { isConnected, address, connect } = useWallet()
+    const { data: isAdmin, isLoading: adminLoading } = useAdminVerify(address)
+    const { data: electionCount } = useElectionCount()
 
     const sidebarItems = [
         { name: 'Overview', path: '/admin', icon: LayoutDashboard },
@@ -29,18 +31,38 @@ export function AdminDashboard() {
 
     const isActive = (path: string) => location.pathname === path
 
+    // Admin verification check
+    if (isConnected && !adminLoading && isAdmin === false) {
+        return (
+            <div className="min-h-[80vh] flex items-center justify-center bg-gradient-section">
+                <div className="glass-card p-12 max-w-md text-center">
+                    <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <AlertCircle className="w-10 h-10 text-red-600" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-primary-900 mb-4">
+                        Admin Access Required
+                    </h2>
+                    <p className="text-gray-600 mb-8">
+                        Your wallet does not have admin privileges. Please use an admin wallet.
+                    </p>
+                    <Link to="/" className="btn-secondary">
+                        Return Home
+                    </Link>
+                </div>
+            </div>
+        )
+    }
+
     const stats = [
-        { label: 'Total Elections', value: '12', icon: Vote, trend: '+2 this month', color: 'primary' },
-        { label: 'Active Elections', value: '3', icon: Clock, trend: '2 ending soon', color: 'green' },
-        { label: 'Registered Voters', value: '1,248', icon: Users, trend: '+156 new', color: 'blue' },
-        { label: 'Total Votes Cast', value: '8,432', icon: TrendingUp, trend: '+1,234 today', color: 'purple' },
+        { label: 'Total Elections', value: electionCount?.toString() || '0', icon: Vote, trend: 'On-chain data', color: 'primary' },
+        { label: 'Active Elections', value: '-', icon: Clock, trend: 'Check Elections tab', color: 'green' },
+        { label: 'Registered Voters', value: '-', icon: Users, trend: 'Check Voters tab', color: 'blue' },
+        { label: 'Total Votes Cast', value: '-', icon: TrendingUp, trend: 'On-chain data', color: 'purple' },
     ]
 
+    // Placeholder - would need event indexing for real activity feed
     const recentActivity = [
-        { type: 'vote', message: 'New vote cast in Student Council Election', time: '2 minutes ago' },
-        { type: 'register', message: 'New voter registered: 0x1a2b...3c4d', time: '15 minutes ago' },
-        { type: 'election', message: 'Board Member Selection created', time: '1 hour ago' },
-        { type: 'vote', message: '50 votes milestone in Community Project Vote', time: '3 hours ago' },
+        { type: 'election', message: 'Connect to blockchain to see activity', time: '' },
     ]
 
     if (!isConnected) {
@@ -126,7 +148,7 @@ export function AdminDashboard() {
                             </p>
                         </div>
                         <Link
-                            to="/admin/elections/new"
+                            to="/admin/elections"
                             className="btn-primary flex items-center gap-2"
                         >
                             <Plus className="w-5 h-5" />
@@ -176,7 +198,7 @@ export function AdminDashboard() {
                             <h2 className="text-xl font-bold text-primary-900 mb-4">Quick Actions</h2>
                             <div className="grid md:grid-cols-2 gap-4">
                                 <Link
-                                    to="/admin/elections/new"
+                                    to="/admin/elections"
                                     className="glass-card-hover p-6 flex items-center gap-4"
                                 >
                                     <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center">

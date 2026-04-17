@@ -11,6 +11,7 @@ import {
     Loader2
 } from 'lucide-react'
 import { useWallet } from '@/hooks/useWallet'
+import { auth, db } from '@/integrations/supabase/client'
 
 export function Login() {
     const navigate = useNavigate()
@@ -29,19 +30,11 @@ export function Login() {
         setIsLoading(true)
 
         try {
-            // TODO: Implement Supabase authentication
-            // const { data, error } = await supabase.auth.signInWithPassword({
-            //   email,
-            //   password,
-            // })
-
-            // Simulate login for demo
-            await new Promise(resolve => setTimeout(resolve, 1000))
-
-            // For demo, redirect to dashboard
+            const { error: supabaseError } = await auth.signIn(email, password)
+            if (supabaseError) throw new Error(supabaseError.message)
             navigate('/dashboard')
         } catch (err) {
-            setError('Invalid email or password')
+            setError(err instanceof Error ? err.message : 'Invalid email or password')
         } finally {
             setIsLoading(false)
         }
@@ -51,10 +44,18 @@ export function Login() {
         setError(null)
         try {
             await connect()
-            if (isConnected) {
-                navigate('/dashboard')
+            if (isConnected && address) {
+                // Check if wallet is registered in system
+                const { data } = await db.voters.getByWallet(address)
+                if (!data) {
+                    // New wallet user - redirect to register
+                    navigate('/register')
+                } else {
+                    // Existing user - go to dashboard
+                    navigate('/dashboard')
+                }
             }
-        } catch (err) {
+        } catch {
             setError('Failed to connect wallet. Please try again.')
         }
     }
