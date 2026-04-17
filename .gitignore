@@ -26,3 +26,4 @@ dist-ssr
 # Local credentials — never commit these
 CREDENTIALS.md
 .env
+test.txt
